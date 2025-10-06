@@ -8,14 +8,12 @@
 #include <limits.h>
 
 #define SPACING 2
-
-/* ---------- Color escape codes (ANSI) ---------- */
 #define RESET   "\033[0m"
 #define BLUE    "\033[1;34m"
 #define GREEN   "\033[1;32m"
 #define GRAY    "\033[0;37m"
 
-/* ---------- Permission string helper ---------- */
+/* ---------------- Permissions ---------------- */
 void perm_string(mode_t mode, char *out) {
     out[0] = S_ISDIR(mode) ? 'd' :
              S_ISCHR(mode) ? 'c' :
@@ -33,20 +31,20 @@ void perm_string(mode_t mode, char *out) {
     out[10] = '\0';
 }
 
-/* ---------- Detect color for a file ---------- */
+/* ---------------- Color based on file type ---------------- */
 const char *file_color(const char *dirpath, const char *name) {
     char full[PATH_MAX];
     snprintf(full, sizeof(full), "%s/%s", dirpath, name);
     struct stat sb;
     if (stat(full, &sb) == -1) return RESET;
 
-    if (S_ISDIR(sb.st_mode)) return BLUE;               // directory
-    if (sb.st_mode & S_IXUSR) return GREEN;             // executable
-    if (name[0] == '.') return GRAY;                    // hidden file
-    return RESET;                                       // normal file
+    if (S_ISDIR(sb.st_mode)) return BLUE;
+    if (sb.st_mode & S_IXUSR) return GREEN;
+    if (name[0] == '.') return GRAY;
+    return RESET;
 }
 
-/* ---------- Collect directory entries ---------- */
+/* ---------------- Collect directory entries ---------------- */
 char **collect_entries(const char *path, int include_hidden, int *out_n) {
     DIR *dir = opendir(path);
     if (!dir) { perror("opendir"); *out_n = 0; return NULL; }
@@ -71,20 +69,20 @@ char **collect_entries(const char *path, int include_hidden, int *out_n) {
     return names;
 }
 
-/* ---------- qsort comparator ---------- */
+/* ---------------- Sorting ---------------- */
 int cmp_names(const void *a, const void *b) {
     const char *const *pa = a;
     const char *const *pb = b;
     return _stricmp(*pa, *pb);
 }
 
-/* ---------- Free helper ---------- */
+/* ---------------- Memory cleanup ---------------- */
 void free_entries(char **names, int n) {
     for (int i = 0; i < n; ++i) free(names[i]);
     free(names);
 }
 
-/* ---------- Long listing ---------- */
+/* ---------------- Long listing output ---------------- */
 void print_long_for_one(const char *dirpath, const char *name) {
     char full[PATH_MAX];
     snprintf(full, sizeof(full), "%s/%s", dirpath, name);
@@ -108,7 +106,7 @@ void print_long_for_one(const char *dirpath, const char *name) {
            color, name, RESET);
 }
 
-/* ---------- Column output ---------- */
+/* ---------------- Column output ---------------- */
 void print_names_in_columns(const char *path, char **names, int n) {
     int maxlen = 0;
     for (int i = 0; i < n; ++i)
@@ -132,22 +130,37 @@ void print_names_in_columns(const char *path, char **names, int n) {
     }
 }
 
-/* ---------- Horizontal (-x) ---------- */
-void print_names_horizontal(const char *path, char **names, int n) {
-    int termw = 80, pos = 0;
-    for (int i = 0; i < n; ++i) {
-        const char *color = file_color(path, names[i]);
-        int wlen = strlen(names[i]) + SPACING;
-        if (pos + wlen > termw) { putchar('\n'); pos = 0; }
-        printf("%s%-*s%s", color, wlen, names[i], RESET);
-        pos += wlen;
+/* ---------------- Recursive function ---------------- */
+void list_recursive(const char *path, int long_flag, int all_flag) {
+    int n = 0;
+    char **names = collect_entries(path, all_flag, &n);
+    if (!names || n == 0) return;
+
+    qsort(names, n, sizeof(char*), cmp_names);
+
+    printf("\n%s:\n", path);
+    if (long_flag) {
+        for (int i = 0; i < n; ++i)
+            print_long_for_one(path, names[i]);
+    } else {
+        print_names_in_columns(path, names, n);
     }
-    if (pos) putchar('\n');
+
+    for (int i = 0; i < n; ++i) {
+        char full[PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", path, names[i]);
+        struct stat sb;
+        if (stat(full, &sb) == -1) continue;
+        if (S_ISDIR(sb.st_mode) && strcmp(names[i], ".") != 0 && strcmp(names[i], "..") != 0) {
+            list_recursive(full, long_flag, all_flag);
+        }
+    }
+    free_entries(names, n);
 }
 
-/* --------------------------- main() --------------------------- */
+/* ---------------- main() ---------------- */
 int main(int argc, char *argv[]) {
-    int long_flag = 0, all_flag = 0, horiz_flag = 0;
+    int long_flag = 0, all_flag = 0, horiz_flag = 0, recursive_flag = 0;
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
@@ -155,6 +168,7 @@ int main(int argc, char *argv[]) {
                 if (argv[i][j] == 'l') long_flag = 1;
                 else if (argv[i][j] == 'a') all_flag = 1;
                 else if (argv[i][j] == 'x') horiz_flag = 1;
+                else if (argv[i][j] == 'R') recursive_flag = 1;
             }
         }
     }
@@ -164,19 +178,21 @@ int main(int argc, char *argv[]) {
         if (argv[i][0] != '-') { path = argv[i]; break; }
     }
 
-    int n = 0;
-    char **names = collect_entries(path, all_flag, &n);
-    if (!names || n == 0) return 0;
+    if (recursive_flag)
+        list_recursive(path, long_flag, all_flag);
+    else {
+        int n = 0;
+        char **names = collect_entries(path, all_flag, &n);
+        if (!names || n == 0) return 0;
+        qsort(names, n, sizeof(char*), cmp_names);
 
-    qsort(names, n, sizeof(char*), cmp_names);
+        if (long_flag)
+            for (int i = 0; i < n; ++i) print_long_for_one(path, names[i]);
+        else
+            print_names_in_columns(path, names, n);
 
-    if (long_flag)
-        for (int i = 0; i < n; ++i) print_long_for_one(path, names[i]);
-    else if (horiz_flag)
-        print_names_horizontal(path, names, n);
-    else
-        print_names_in_columns(path, names, n);
+        free_entries(names, n);
+    }
 
-    free_entries(names, n);
     return 0;
 }
