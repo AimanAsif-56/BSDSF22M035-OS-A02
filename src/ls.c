@@ -9,6 +9,12 @@
 
 #define SPACING 2
 
+/* ---------- Color escape codes (ANSI) ---------- */
+#define RESET   "\033[0m"
+#define BLUE    "\033[1;34m"
+#define GREEN   "\033[1;32m"
+#define GRAY    "\033[0;37m"
+
 /* ---------- Permission string helper ---------- */
 void perm_string(mode_t mode, char *out) {
     out[0] = S_ISDIR(mode) ? 'd' :
@@ -25,6 +31,19 @@ void perm_string(mode_t mode, char *out) {
     out[8] = (mode & S_IWOTH) ? 'w' : '-';
     out[9] = (mode & S_IXOTH) ? 'x' : '-';
     out[10] = '\0';
+}
+
+/* ---------- Detect color for a file ---------- */
+const char *file_color(const char *dirpath, const char *name) {
+    char full[PATH_MAX];
+    snprintf(full, sizeof(full), "%s/%s", dirpath, name);
+    struct stat sb;
+    if (stat(full, &sb) == -1) return RESET;
+
+    if (S_ISDIR(sb.st_mode)) return BLUE;               // directory
+    if (sb.st_mode & S_IXUSR) return GREEN;             // executable
+    if (name[0] == '.') return GRAY;                    // hidden file
+    return RESET;                                       // normal file
 }
 
 /* ---------- Collect directory entries ---------- */
@@ -45,7 +64,7 @@ char **collect_entries(const char *path, int include_hidden, int *out_n) {
             if (!tmp) { perror("realloc"); free(names); closedir(dir); *out_n = 0; return NULL; }
             names = tmp;
         }
-        names[n++] = _strdup(entry->d_name);   // Windows-safe strdup
+        names[n++] = _strdup(entry->d_name);
     }
     closedir(dir);
     *out_n = n;
@@ -56,7 +75,7 @@ char **collect_entries(const char *path, int include_hidden, int *out_n) {
 int cmp_names(const void *a, const void *b) {
     const char *const *pa = a;
     const char *const *pb = b;
-    return _stricmp(*pa, *pb);     // case-insensitive alphabetical sort
+    return _stricmp(*pa, *pb);
 }
 
 /* ---------- Free helper ---------- */
@@ -65,39 +84,37 @@ void free_entries(char **names, int n) {
     free(names);
 }
 
-/* ---------- Print one long-listing line ---------- */
+/* ---------- Long listing ---------- */
 void print_long_for_one(const char *dirpath, const char *name) {
     char full[PATH_MAX];
     snprintf(full, sizeof(full), "%s/%s", dirpath, name);
-
     struct stat sb;
     if (stat(full, &sb) == -1) { perror("stat"); return; }
 
     char perm[11];
     perm_string(sb.st_mode, perm);
-
     const char *user = "user";
     const char *group = "group";
-
     char timebuf[64];
     struct tm *tm = localtime(&sb.st_mtime);
-    strftime(timebuf, sizeof(timebuf), "%b %d %H:%M", tm); // %d instead of %e
+    strftime(timebuf, sizeof(timebuf), "%b %d %H:%M", tm);
 
-    printf("%s %3ld %-8s %-8s %8ld %s %s\n",
+    const char *color = file_color(dirpath, name);
+    printf("%s %3ld %-8s %-8s %8ld %s %s%s%s\n",
            perm, (long)sb.st_nlink,
            user, group,
            (long)sb.st_size,
            timebuf,
-           name);
+           color, name, RESET);
 }
 
-/* ---------- Print names in columns ---------- */
-void print_names_in_columns(char **names, int n) {
+/* ---------- Column output ---------- */
+void print_names_in_columns(const char *path, char **names, int n) {
     int maxlen = 0;
     for (int i = 0; i < n; ++i)
         if ((int)strlen(names[i]) > maxlen) maxlen = strlen(names[i]);
 
-    int termw = 80;   // fixed width for Windows
+    int termw = 80;
     int colw = maxlen + SPACING;
     int cols = termw / colw;
     if (cols < 1) cols = 1;
@@ -106,32 +123,32 @@ void print_names_in_columns(char **names, int n) {
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
             int idx = r + c * rows;
-            if (idx < n) printf("%-*s", colw, names[idx]);
+            if (idx < n) {
+                const char *color = file_color(path, names[idx]);
+                printf("%s%-*s%s", color, colw, names[idx], RESET);
+            }
         }
         putchar('\n');
     }
 }
 
-/* ---------- Print horizontally (-x) ---------- */
-void print_names_horizontal(char **names, int n) {
-    int termw = 80;
-    int pos = 0;
+/* ---------- Horizontal (-x) ---------- */
+void print_names_horizontal(const char *path, char **names, int n) {
+    int termw = 80, pos = 0;
     for (int i = 0; i < n; ++i) {
+        const char *color = file_color(path, names[i]);
         int wlen = strlen(names[i]) + SPACING;
         if (pos + wlen > termw) { putchar('\n'); pos = 0; }
-        printf("%-*s", wlen, names[i]);
+        printf("%s%-*s%s", color, wlen, names[i], RESET);
         pos += wlen;
     }
     if (pos) putchar('\n');
 }
 
-/* ================================================================ */
-/*                              main()                              */
-/* ================================================================ */
+/* --------------------------- main() --------------------------- */
 int main(int argc, char *argv[]) {
     int long_flag = 0, all_flag = 0, horiz_flag = 0;
 
-    // Basic Windows-safe argument parsing
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
             for (int j = 1; argv[i][j] != '\0'; j++) {
@@ -144,27 +161,21 @@ int main(int argc, char *argv[]) {
 
     const char *path = ".";
     for (int i = 1; i < argc; i++) {
-        if (argv[i][0] != '-') {
-            path = argv[i];
-            break;
-        }
+        if (argv[i][0] != '-') { path = argv[i]; break; }
     }
 
     int n = 0;
     char **names = collect_entries(path, all_flag, &n);
     if (!names || n == 0) return 0;
 
-    /* Feature 5: alphabetical sorting */
     qsort(names, n, sizeof(char*), cmp_names);
 
-    if (long_flag) {
-        for (int i = 0; i < n; ++i)
-            print_long_for_one(path, names[i]);
-    } else if (horiz_flag) {
-        print_names_horizontal(names, n);
-    } else {
-        print_names_in_columns(names, n);
-    }
+    if (long_flag)
+        for (int i = 0; i < n; ++i) print_long_for_one(path, names[i]);
+    else if (horiz_flag)
+        print_names_horizontal(path, names, n);
+    else
+        print_names_in_columns(path, names, n);
 
     free_entries(names, n);
     return 0;
