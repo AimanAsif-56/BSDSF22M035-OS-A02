@@ -1,8 +1,8 @@
 /*
- * Programming Assignment 02: lsv1.2.0
- * Feature: Column display (down-then-across) + keep -l support
+ * Programming Assignment 02: lsv1.3.0
+ * Feature: -a (show hidden files), -l (long listing), column display
  *
- * Windows-friendly version (no S_ISLNK, S_ISSOCK)
+ * Windows-friendly version
  */
 
 #include <stdio.h>
@@ -21,7 +21,7 @@
 #endif
 
 /* function declarations */
-void do_ls(const char *dir, int long_flag);
+void do_ls(const char *dir, int long_flag, int all_flag);
 void show_file_info(const char *dir, const char *filename);
 void mode_to_str(mode_t mode, char *buf);
 int get_term_width(void);
@@ -30,24 +30,26 @@ int get_term_width(void);
 int main(int argc, char *argv[])
 {
     int long_flag = 0;
+    int all_flag = 0;   // NEW for -a
     int opt;
 
-    /* parse options: only -l for now */
-    while ((opt = getopt(argc, argv, "l")) != -1) {
+    /* parse options: now supports -l and -a */
+    while ((opt = getopt(argc, argv, "la")) != -1) {
         switch (opt) {
             case 'l': long_flag = 1; break;
+            case 'a': all_flag = 1; break;
             default:
-                fprintf(stderr, "Usage: %s [-l] [dir...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l] [-a] [dir...]\n", argv[0]);
                 exit(EXIT_FAILURE);
         }
     }
 
     if (optind == argc) {
-        do_ls(".", long_flag);
+        do_ls(".", long_flag, all_flag);
     } else {
         for (int i = optind; i < argc; ++i) {
             printf("Directory listing of %s:\n", argv[i]);
-            do_ls(argv[i], long_flag);
+            do_ls(argv[i], long_flag, all_flag);
             if (i + 1 < argc) puts("");
         }
     }
@@ -120,7 +122,7 @@ void show_file_info(const char *dir, const char *filename)
 
 /* ------------------------------------------------------------------ */
 /* do_ls: if long_flag, print -l style; otherwise print in columns */
-void do_ls(const char *dir, int long_flag)
+void do_ls(const char *dir, int long_flag, int all_flag)
 {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -134,7 +136,7 @@ void do_ls(const char *dir, int long_flag)
     if (long_flag) {
         /* long listing */
         while ((entry = readdir(dp)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
+            if (!all_flag && entry->d_name[0] == '.') continue;
             show_file_info(dir, entry->d_name);
         }
         if (errno != 0) perror("readdir failed");
@@ -150,7 +152,7 @@ void do_ls(const char *dir, int long_flag)
 
     size_t maxlen = 0;
     while ((entry = readdir(dp)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
+        if (!all_flag && entry->d_name[0] == '.') continue;
         if (n + 1 > cap) {
             cap *= 2;
             char **tmp = realloc(names, cap * sizeof(char*));
@@ -191,5 +193,3 @@ void do_ls(const char *dir, int long_flag)
     for (size_t i = 0; i < n; ++i) free(names[i]);
     free(names);
 }
-
-
